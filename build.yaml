@@ -1,0 +1,24 @@
+---
+include:
+  # Central (right) — Prospector enabled (default)
+  - board: xiao_ble/nrf52840/zmk
+    shield: aerogu38_right rgbled_adapter
+    snippet: studio-rpc-usb-uart
+    artifact-name: aerogu38_right_prospector
+
+  # Central (right) — Prospector disabled
+  - board: xiao_ble/nrf52840/zmk
+    shield: aerogu38_right rgbled_adapter
+    snippet: studio-rpc-usb-uart
+    artifact-name: aerogu38_right
+    cmake-args: -DCONFIG_ZMK_STATUS_ADVERTISEMENT=n
+
+  # Peripheral (left) — single variant
+  - board: xiao_ble/nrf52840/zmk
+    shield: aerogu38_left rgbled_adapter
+    artifact-name: aerogu38_left
+
+  # BLE pairing reset
+  - board: xiao_ble/nrf52840/zmk
+    shield: settings_reset
+    artifact-name: settings_reset

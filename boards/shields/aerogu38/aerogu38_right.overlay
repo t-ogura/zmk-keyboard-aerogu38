@@ -1,0 +1,76 @@
+#include "aerogu38.dtsi"
+#include <behaviors.dtsi>
+#include <input/processors.dtsi>
+#include <input/processors/runtime-input-processor.dtsi>
+#include <dt-bindings/zmk/runtime_input_processor.h>
+#include <dt-bindings/zmk/input_transform.h>
+
+&default_transform {
+    col-offset = <5>;
+};
+
+&xiao_serial { status = "disabled"; };
+
+/* Disable I2C0 to prevent conflict with SPI0 (same hardware peripheral). */
+&i2c0 { status = "disabled"; };
+
+/* Disable the board's default UART-over-USB-CDC-ACM endpoint.
+ * Zephyr 4's xiao_ble board unconditionally adds a second CDC ACM USB
+ * function for console/shell. With the studio-rpc-usb-uart snippet that
+ * adds another CDC ACM for the Studio RPC channel, the device ends up
+ * exposing two CDC ACMs and DYA Studio's Web Serial port-open fails
+ * ("The port is already open" / wrong port chosen). We don't use the
+ * console, so drop the node. */
+&board_cdc_acm_uart { status = "disabled"; };
+
+&scroll_runtime_input_processor {
+    processor-label = "rscroll";
+    x-codes = <INPUT_REL_X>;
+    y-codes = <INPUT_REL_Y>;
+    xy-to-scroll-enabled;
+    active-layers = <8>;  /* BIT(3) = layer 3 (Scroll) */
+    axis-snap-mode = <AXIS_SNAP_MODE_Y>;
+    axis-snap-threshold = <200>;
+};
+
+/ {
+    deadzone_processor: deadzone_processor {
+        compatible = "zmk,input-processor-deadzone";
+        #input-processor-cells = <0>;
+        threshold = <10>;
+        timeout-ms = <300>;
+    };
+
+    trackball_listener: trackball_listener {
+        compatible = "zmk,input-listener";
+        device = <&trackball>;
+        /* Chain order:
+         *   deadzone  - filter sub-threshold noise
+         *   xy_transform - invert both axes (sensor-mounting orientation)
+         *   mouse_runtime - DYA Studio runtime config (CPI / snipe / etc)
+         *   temp_layer 4 1000ms - auto-enable Mouse layer (4) on movement,
+         *     turn back off after 1s of trackball inactivity
+         *   scroll_runtime - convert XY -> scroll on layer 3 only */
+        input-processors = <&deadzone_processor
+                            &zip_xy_transform (INPUT_TRANSFORM_X_INVERT | INPUT_TRANSFORM_Y_INVERT)
+                            &mouse_runtime_input_processor
+                            &zip_temp_layer 4 1000
+                            &scroll_runtime_input_processor>;
+    };
+};
+
+&spi0 {
+    status = "okay";
+
+    trackball: trackball@0 {
+        status = "okay";
+        compatible = "pixart,paw3222";
+        reg = <0>;
+        spi-max-frequency = <2000000>;
+        irq-gpios = <&xiao_d 0 (GPIO_ACTIVE_LOW | GPIO_PULL_UP)>;
+        /* Boot-time sensor CPI (counts per inch). Valid range 608-4826 in
+         * steps of 38; driver rounds down. 800 maps to 21*38 = 798.
+         * DYA Studio's runtime-input-processor can override at runtime. */
+        res-cpi = <800>;
+    };
+};

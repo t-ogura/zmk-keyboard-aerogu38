@@ -1,0 +1,5 @@
+config SHIELD_AEROGU38_LEFT
+    def_bool $(shields_list_contains,aerogu38_left)
+
+config SHIELD_AEROGU38_RIGHT
+    def_bool $(shields_list_contains,aerogu38_right)

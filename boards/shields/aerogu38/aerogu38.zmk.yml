@@ -1,0 +1,12 @@
+file_format: "1"
+id: aerogu38
+name: aerogu38
+type: shield
+url: https://github.com/t-ogura/zmk-keyboard-aerogu38
+requires: [seeed_xiao]
+features:
+  - keys
+  - pointer
+siblings:
+  - aerogu38_left
+  - aerogu38_right

@@ -1,0 +1,43 @@
+manifest:
+  defaults:
+    revision: main
+  remotes:
+    - name: cormoran
+      url-base: https://github.com/cormoran
+    - name: sekigon-gonnoc
+      url-base: https://github.com/sekigon-gonnoc
+    - name: caksoylar
+      url-base: https://github.com/caksoylar
+    - name: prospector
+      url-base: https://github.com/t-ogura
+  projects:
+    # ZMK: cormoran fork, main+dya = ZMK main (Zephyr 4.1) base with DYA Studio RPC
+    - name: zmk
+      remote: cormoran
+      revision: main+dya
+      import: app/west.yml
+    # Trackball driver
+    - name: zmk-driver-paw3222
+      remote: sekigon-gonnoc
+    # RGB LED widget (main supports Zephyr 4.1 / xiao_ble naming)
+    - name: zmk-rgbled-widget
+      remote: caksoylar
+    # DYA Studio modules (main = v4-compatible)
+    - name: zmk-module-ble-management
+      remote: cormoran
+    - name: zmk-module-battery-history
+      remote: cormoran
+    - name: zmk-module-settings-rpc
+      remote: cormoran
+    - name: zmk-module-runtime-input-processor
+      remote: cormoran
+    # Deadzone input processor
+    - name: zmk-input-processor-deadzone
+      remote: prospector
+    # Prospector
+    - name: prospector-zmk-module
+      remote: prospector
+      revision: main
+      path: modules/prospector-zmk-module
+  self:
+    path: config

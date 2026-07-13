@@ -1,0 +1,106 @@
+name: Build ZMK firmware
+
+on: [push, pull_request, workflow_dispatch]
+
+jobs:
+  matrix:
+    runs-on: ubuntu-latest
+    name: Prepare build matrix
+    outputs:
+      matrix: ${{ steps.set-matrix.outputs.matrix }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: set-matrix
+        run: |
+          python3 -c "
+          import yaml, json
+          with open('build.yaml') as f:
+              data = yaml.safe_load(f)
+          matrix = {'include': data['include']}
+          print('matrix=' + json.dumps(matrix))
+          " >> "$GITHUB_OUTPUT"
+
+  build:
+    needs: matrix
+    runs-on: ubuntu-latest
+    container:
+      image: zmkfirmware/zmk-build-arm:stable
+    name: Build ${{ matrix.artifact-name }}
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJson(needs.matrix.outputs.matrix) }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Cache west modules
+        uses: actions/cache@v4
+        continue-on-error: true
+        env:
+          cache_name: cache-west-modules
+        with:
+          path: |
+            bootloader/
+            modules/
+            tools/
+            zephyr/
+            zmk/
+            zmk-*/
+          key: ${{ runner.os }}-west-${{ hashFiles('config/west.yml') }}
+          restore-keys: |
+            ${{ runner.os }}-west-
+
+      - name: Initialize west workspace
+        run: |
+          git config --global --add safe.directory ${{ github.workspace }}
+          west init -l config
+          west update --narrow
+          west zephyr-export
+
+      - name: Build firmware
+        run: |
+          SHIELD="${{ matrix.shield }}"
+          SNIPPET="${{ matrix.snippet }}"
+          CMAKE_ARGS="${{ matrix.cmake-args }}"
+          EXTRA_ARGS=""
+          if [ -n "$SNIPPET" ]; then
+            EXTRA_ARGS="$EXTRA_ARGS -DSNIPPET=${SNIPPET}"
+          fi
+          # BOARD_ROOT (not ZMK_EXTRA_MODULES) is used here because
+          # $GITHUB_WORKSPACE doubles as the west workspace root after
+          # `west update`, which clones Zephyr into $GITHUB_WORKSPACE/zephyr.
+          # Registering $GITHUB_WORKSPACE as an extra ZMK module then makes
+          # zephyr_module.py fall back to its default cmake/kconfig paths
+          # ('zephyr/CMakeLists.txt' and 'zephyr/Kconfig') -- which now point
+          # at the cloned Zephyr's own files, causing recursive Kconfig
+          # source-of-self errors and "zephyr_linker already configured".
+          # BOARD_ROOT only adds the boards/ search path; it leaves the
+          # workspace out of Zephyr's module list and avoids the conflict.
+          west build -s zmk/app -p -b ${{ matrix.board }} \
+            -- -DSHIELD="${SHIELD}" \
+            -DBOARD_ROOT="${GITHUB_WORKSPACE}" \
+            -DZMK_CONFIG="${GITHUB_WORKSPACE}/config" \
+            ${EXTRA_ARGS} ${CMAKE_ARGS}
+
+      - name: Rename artifact
+        run: |
+          mkdir -p artifacts
+          cp build/zephyr/zmk.uf2 "artifacts/${{ matrix.artifact-name }}.uf2"
+
+      - name: Upload firmware
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact-name }}
+          path: artifacts/${{ matrix.artifact-name }}.uf2
+
+  merge:
+    needs: build
+    runs-on: ubuntu-latest
+    name: Merge artifacts
+    steps:
+      - name: Merge all firmware artifacts
+        uses: actions/upload-artifact/merge@v4
+        with:
+          name: firmware
+          pattern: "*"
+          delete-merged: true

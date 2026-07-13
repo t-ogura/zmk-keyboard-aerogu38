@@ -1,0 +1,19 @@
+if SHIELD_AEROGU38_LEFT || SHIELD_AEROGU38_RIGHT
+
+config ZMK_SPLIT
+    default y
+
+config NFCT_PINS_AS_GPIOS
+    default y
+
+endif
+
+if SHIELD_AEROGU38_RIGHT
+
+config ZMK_KEYBOARD_NAME
+    default "Aerogu38"
+
+config ZMK_SPLIT_ROLE_CENTRAL
+    default y
+
+endif

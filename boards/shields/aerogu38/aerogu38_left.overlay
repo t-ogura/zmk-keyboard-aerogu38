@@ -1,1 +1,60 @@
 #include "aerogu38.dtsi"
+
+/* ==========================================================================
+ * Sharp Memory LCD LS011B7DH03 (160 x 68, monochrome)
+ *
+ * Wiring on the left half (XIAO BLE):
+ *   D0 (P0.02) = SCS  (LCD chip select, Active HIGH!)
+ *   D4 (P0.04) = SI   (SPI MOSI)
+ *   D5 (P0.05) = SCLK (SPI SCK)
+ *   3V3        = VDD / DISP (tie DISP to VCC on the LCD FPC)
+ *   GND        = VSS
+ *   EXTCOMIN   = NC (software VCOM inversion via Zephyr ls0xx driver)
+ * ==========================================================================
+ */
+
+/* SPI1 shares pins with I2C1 on nRF52840; keep I2C1 out to avoid conflict. */
+&i2c1 { status = "disabled"; };
+
+&pinctrl {
+    spi1_default: spi1_default {
+        group1 {
+            psels = <NRF_PSEL(SPIM_SCK, 0, 5)>,    /* D5 = P0.05 = SCLK */
+                    <NRF_PSEL(SPIM_MOSI, 0, 4)>;   /* D4 = P0.04 = SI   */
+        };
+    };
+
+    spi1_sleep: spi1_sleep {
+        group1 {
+            psels = <NRF_PSEL(SPIM_SCK, 0, 5)>,
+                    <NRF_PSEL(SPIM_MOSI, 0, 4)>;
+            low-power-enable;
+        };
+    };
+};
+
+&spi1 {
+    status = "okay";
+    compatible = "nordic,nrf-spim";
+    pinctrl-0 = <&spi1_default>;
+    pinctrl-1 = <&spi1_sleep>;
+    pinctrl-names = "default", "sleep";
+    /* Sharp Memory LCD SCS is Active HIGH - opposite of standard SPI CS. */
+    cs-gpios = <&xiao_d 0 GPIO_ACTIVE_HIGH>;
+
+    memory_lcd: ls0xx@0 {
+        compatible = "sharp,ls0xx";
+        reg = <0>;
+        /* Datasheet allows up to 2 MHz; keep 1 MHz for signal margin over
+         * the split's short flat-flex wiring to the LCD. */
+        spi-max-frequency = <1000000>;
+        width = <160>;
+        height = <68>;
+    };
+};
+
+/ {
+    chosen {
+        zephyr,display = &memory_lcd;
+    };
+};

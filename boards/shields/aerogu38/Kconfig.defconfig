@@ -17,3 +17,13 @@ config ZMK_SPLIT_ROLE_CENTRAL
     default y
 
 endif
+
+if SHIELD_AEROGU38_LEFT
+
+# Peripheral runs a custom status screen (Aerogu logo) instead of the
+# default ZMK layout with layer/battery widgets.
+choice ZMK_DISPLAY_STATUS_SCREEN
+    default ZMK_DISPLAY_STATUS_SCREEN_CUSTOM if ZMK_DISPLAY
+endchoice
+
+endif

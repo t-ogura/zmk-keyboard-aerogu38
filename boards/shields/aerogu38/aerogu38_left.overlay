@@ -48,12 +48,13 @@
         /* Datasheet allows up to 2 MHz; keep 1 MHz for signal margin over
          * the split's short flat-flex wiring to the LCD. */
         spi-max-frequency = <1000000>;
-        width = <160>;
-        height = <68>;
-        /* EXTMODE tied LOW on the panel side means VCOM inversion has to
-         * come from serial commands. Without this the driver leaves VCOM
-         * static, and the image degrades to grey / disappears in seconds
-         * (or never appears if the panel already had DC bias). */
+        /* *** DEBUG (dev/lcd-debug-ls013 branch only) ***
+         * Physical panel is LS013B7DH05 (144 x 168). The custom status
+         * screen rotates LVGL 90 deg and places a 160x68 virtual window
+         * inside so the LS011 UI can be validated without the real
+         * panel. */
+        width = <144>;
+        height = <168>;
         serial-vcom-inversion;
         serial-vcom-interval = <1000>;
     };

@@ -1,4 +1,7 @@
 if(CONFIG_ZMK_DISPLAY AND CONFIG_SHIELD_AEROGU38_LEFT)
+  # Rotation adapter (future module: zmk-widget-sharp-memory-lcd)
+  zephyr_library_sources(lcd/portrait_display.c)
+
   # UI content builder - target-independent, always compiled.
   zephyr_library_sources(status_ui.c)
   zephyr_library_sources(aerogu_logo.c)

@@ -44,6 +44,8 @@ extern const lv_image_dsc_t aerogu_logo;
  * them after the screen has been loaded. */
 static lv_obj_t *battery_l_label;
 static lv_obj_t *battery_l_bar;
+static lv_obj_t *battery_r_label;
+static lv_obj_t *battery_r_bar;
 static lv_obj_t *layer_num_label;
 static lv_obj_t *endpoint_label;
 
@@ -222,6 +224,20 @@ static void handle_relay_endpoint(const uint8_t *data, size_t len) {
     }
 }
 
+static void handle_relay_central_battery(const uint8_t *data, size_t len) {
+    if (len < sizeof(struct zmk_battery_state_changed)) {
+        return;
+    }
+    struct zmk_battery_state_changed ev;
+    memcpy(&ev, data, sizeof(ev));
+    if (battery_r_label) {
+        lv_label_set_text_fmt(battery_r_label, "R %d%%", ev.state_of_charge);
+    }
+    if (battery_r_bar) {
+        lv_bar_set_value(battery_r_bar, ev.state_of_charge, LV_ANIM_OFF);
+    }
+}
+
 static int on_relay_event(const zmk_event_t *eh) {
     const struct zmk_relay_event_received *ev = as_zmk_relay_event_received(eh);
     if (!ev || !ev->event_name) {
@@ -233,6 +249,8 @@ static int on_relay_event(const zmk_event_t *eh) {
         handle_relay_profile(ev->event_data, ev->event_data_size);
     } else if (strcmp(ev->event_name, "ENDP") == 0) {
         handle_relay_endpoint(ev->event_data, ev->event_data_size);
+    } else if (strcmp(ev->event_name, "CBAT") == 0) {
+        handle_relay_central_battery(ev->event_data, ev->event_data_size);
     }
     return ZMK_EV_EVENT_BUBBLE;
 }
@@ -268,6 +286,7 @@ void aerogu38_status_ui_build(lv_obj_t *parent) {
     build_battery_row(parent, 114, "L", init_pct, false,
                       &battery_l_label, &battery_l_bar);
 
-    /* Right half battery: placeholder until we wire the split relay. */
-    build_battery_row(parent, 138, "R", -1, true, NULL, NULL);
+    /* Right half battery: fed by the central via the CBAT relay event. */
+    build_battery_row(parent, 138, "R", -1, false,
+                      &battery_r_label, &battery_r_bar);
 }

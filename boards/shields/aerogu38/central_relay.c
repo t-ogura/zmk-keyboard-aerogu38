@@ -22,6 +22,7 @@
 #include <zephyr/kernel.h>
 #include <zephyr/logging/log.h>
 #include <zmk/event_manager.h>
+#include <zmk/events/battery_state_changed.h>
 #include <zmk/events/layer_state_changed.h>
 #include <zmk/events/ble_active_profile_changed.h>
 #include <zmk/events/endpoint_changed.h>
@@ -31,3 +32,13 @@ LOG_MODULE_REGISTER(aerogu38_relay, CONFIG_ZMK_LOG_LEVEL);
 ZMK_RELAY_EVENT_CENTRAL_TO_PERIPHERAL(zmk_layer_state_changed, LAYR, );
 ZMK_RELAY_EVENT_CENTRAL_TO_PERIPHERAL(zmk_ble_active_profile_changed, PROF, );
 ZMK_RELAY_EVENT_CENTRAL_TO_PERIPHERAL(zmk_endpoint_changed, ENDP, );
+
+/* Central-battery relay uses a custom identifier ("CBAT") instead of
+ * the default (which would be derived from the ZMK event name). This
+ * matters because the peripheral separately raises its own
+ * zmk_battery_state_changed for its own battery, and the peripheral
+ * status UI subscribes to that. Sending the central battery under a
+ * distinct identifier lets the peripheral fork the two sources
+ * cleanly - the local subscription handles L, the raw relay dispatch
+ * on "CBAT" handles R. */
+ZMK_RELAY_EVENT_CENTRAL_TO_PERIPHERAL(zmk_battery_state_changed, CBAT, );

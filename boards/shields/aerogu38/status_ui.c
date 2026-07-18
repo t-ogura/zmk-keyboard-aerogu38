@@ -35,6 +35,8 @@
 #include <zmk/events/ble_active_profile_changed.h>
 #include <zmk/events/endpoint_changed.h>
 #include <zmk/events/layer_state_changed.h>
+#include <zmk/events/modifiers_state_changed.h>
+#include <dt-bindings/zmk/modifiers.h>
 
 LOG_MODULE_REGISTER(aerogu38_status, CONFIG_ZMK_LOG_LEVEL);
 
@@ -47,11 +49,9 @@ static lv_obj_t *battery_l_bar;
 static lv_obj_t *battery_r_label;
 static lv_obj_t *battery_r_bar;
 static lv_obj_t *layer_num_label;
+static lv_obj_t *layer_name_label;
+static lv_obj_t *modifiers_label;
 static lv_obj_t *endpoint_label;
-
-/* Track which layers are currently active. bit N set = layer N is on.
- * We display the highest active layer number. */
-static uint32_t active_layers_mask = 0x01;   /* layer 0 always active */
 
 /* Draw a 1-px horizontal separator line spanning the full width at the
  * given y coordinate. Uses lv_line for a proper 1-px stroke. */
@@ -82,19 +82,17 @@ static void build_layer_section(lv_obj_t *parent, int y) {
     lv_obj_set_style_text_font(layer_num_label, &lv_font_unscii_16, 0);
     lv_obj_align(layer_num_label, LV_ALIGN_TOP_LEFT, 2, y + 2);
 
-    /* Reserved for a layer name once we route it - relayed layer name
-     * strings are large, so for now we stick to the numeric indicator. */
-    lv_obj_t *name = lv_label_create(parent);
-    lv_label_set_text(name, "----");
-    lv_obj_set_style_text_font(name, &lv_font_unscii_8, 0);
-    lv_obj_align(name, LV_ALIGN_TOP_LEFT, 2, y + 22);
+    layer_name_label = lv_label_create(parent);
+    lv_label_set_text(layer_name_label, "...");
+    lv_obj_set_style_text_font(layer_name_label, &lv_font_unscii_8, 0);
+    lv_obj_align(layer_name_label, LV_ALIGN_TOP_LEFT, 2, y + 22);
 }
 
-static void build_modifiers_placeholder(lv_obj_t *parent, int y) {
-    lv_obj_t *lbl = lv_label_create(parent);
-    lv_label_set_text(lbl, "- - - -");
-    lv_obj_set_style_text_font(lbl, &lv_font_unscii_16, 0);
-    lv_obj_align(lbl, LV_ALIGN_TOP_LEFT, 2, y + 4);
+static void build_modifiers_section(lv_obj_t *parent, int y) {
+    modifiers_label = lv_label_create(parent);
+    lv_label_set_text(modifiers_label, "- - - -");
+    lv_obj_set_style_text_font(modifiers_label, &lv_font_unscii_16, 0);
+    lv_obj_align(modifiers_label, LV_ALIGN_TOP_LEFT, 2, y + 4);
 }
 
 static void build_endpoint_section(lv_obj_t *parent, int y) {
@@ -167,37 +165,49 @@ ZMK_SUBSCRIPTION(aerogu38_status_battery, zmk_battery_state_changed);
  * update widgets directly.
  */
 
-static void layer_display_update(void) {
-    if (!layer_num_label) {
+/* Custom layer-status payload sent by the central under identifier
+ * "LNAM". Kept in sync with central_relay.c's aerogu38_layer_status. */
+#define LAYER_NAME_MAX_LEN 15
+struct layer_status_payload {
+    uint8_t layer;
+    char name[LAYER_NAME_MAX_LEN + 1];
+} __packed;
+
+static void handle_relay_layer_name(const uint8_t *data, size_t len) {
+    if (len < sizeof(struct layer_status_payload)) {
         return;
     }
-    int highest = 0;
-    for (int i = 31; i >= 0; i--) {
-        if (active_layers_mask & (1u << i)) {
-            highest = i;
-            break;
-        }
+    struct layer_status_payload body;
+    memcpy(&body, data, sizeof(body));
+    body.name[LAYER_NAME_MAX_LEN] = '\0';   /* defensive */
+
+    if (layer_num_label) {
+        lv_label_set_text_fmt(layer_num_label, "L %u", (unsigned)body.layer);
     }
-    lv_label_set_text_fmt(layer_num_label, "L %d", highest);
+    if (layer_name_label) {
+        /* Blank name -> show "..." so the row still has content. */
+        lv_label_set_text(layer_name_label, body.name[0] ? body.name : "...");
+    }
 }
 
-static void handle_relay_layer(const uint8_t *data, size_t len) {
-    if (len < sizeof(struct zmk_layer_state_changed)) {
+static void handle_relay_modifiers(const uint8_t *data, size_t len) {
+    if (len < sizeof(struct zmk_modifiers_state_changed) || !modifiers_label) {
         return;
     }
-    struct zmk_layer_state_changed ev;
+    struct zmk_modifiers_state_changed ev;
     memcpy(&ev, data, sizeof(ev));
-    if (ev.layer >= 32) {
-        return;
-    }
-    if (ev.state) {
-        active_layers_mask |= (1u << ev.layer);
-    } else {
-        active_layers_mask &= ~(1u << ev.layer);
-        /* Layer 0 (base) always considered active for display purposes. */
-        active_layers_mask |= 0x01;
-    }
-    layer_display_update();
+    uint8_t m = (uint8_t)ev.modifiers;
+
+    /* One character slot per modifier family (L|R merged). Uppercase
+     * letter when the modifier is held, '-' when it isn't. */
+    char slot[4] = {
+        (m & (MOD_LSFT | MOD_RSFT)) ? 'S' : '-',
+        (m & (MOD_LCTL | MOD_RCTL)) ? 'C' : '-',
+        (m & (MOD_LALT | MOD_RALT)) ? 'A' : '-',
+        (m & (MOD_LGUI | MOD_RGUI)) ? 'W' : '-',
+    };
+    lv_label_set_text_fmt(modifiers_label, "%c %c %c %c",
+                          slot[0], slot[1], slot[2], slot[3]);
 }
 
 static void handle_relay_profile(const uint8_t *data, size_t len) {
@@ -243,8 +253,10 @@ static int on_relay_event(const zmk_event_t *eh) {
     if (!ev || !ev->event_name) {
         return ZMK_EV_EVENT_BUBBLE;
     }
-    if (strcmp(ev->event_name, "LAYR") == 0) {
-        handle_relay_layer(ev->event_data, ev->event_data_size);
+    if (strcmp(ev->event_name, "LNAM") == 0) {
+        handle_relay_layer_name(ev->event_data, ev->event_data_size);
+    } else if (strcmp(ev->event_name, "MODS") == 0) {
+        handle_relay_modifiers(ev->event_data, ev->event_data_size);
     } else if (strcmp(ev->event_name, "PROF") == 0) {
         handle_relay_profile(ev->event_data, ev->event_data_size);
     } else if (strcmp(ev->event_name, "ENDP") == 0) {
@@ -275,7 +287,7 @@ void aerogu38_status_ui_build(lv_obj_t *parent) {
     build_layer_section(parent, 21);
     add_divider(parent, 61);
 
-    build_modifiers_placeholder(parent, 62);
+    build_modifiers_section(parent, 62);
     add_divider(parent, 86);
 
     build_endpoint_section(parent, 87);

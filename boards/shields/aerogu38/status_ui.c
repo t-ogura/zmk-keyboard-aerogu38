@@ -25,10 +25,18 @@
 
 #include "status_ui.h"
 
+#include <string.h>
 #include <zephyr/kernel.h>
+#include <zephyr/logging/log.h>
 #include <zmk/battery.h>
+#include <zmk/endpoints.h>
 #include <zmk/event_manager.h>
 #include <zmk/events/battery_state_changed.h>
+#include <zmk/events/ble_active_profile_changed.h>
+#include <zmk/events/endpoint_changed.h>
+#include <zmk/events/layer_state_changed.h>
+
+LOG_MODULE_REGISTER(aerogu38_status, CONFIG_ZMK_LOG_LEVEL);
 
 extern const lv_image_dsc_t aerogu_logo;
 
@@ -36,6 +44,12 @@ extern const lv_image_dsc_t aerogu_logo;
  * them after the screen has been loaded. */
 static lv_obj_t *battery_l_label;
 static lv_obj_t *battery_l_bar;
+static lv_obj_t *layer_num_label;
+static lv_obj_t *endpoint_label;
+
+/* Track which layers are currently active. bit N set = layer N is on.
+ * We display the highest active layer number. */
+static uint32_t active_layers_mask = 0x01;   /* layer 0 always active */
 
 /* Draw a 1-px horizontal separator line spanning the full width at the
  * given y coordinate. Uses lv_line for a proper 1-px stroke. */
@@ -60,12 +74,14 @@ static void build_header(lv_obj_t *parent) {
     lv_obj_set_pos(img, 0, 0);
 }
 
-static void build_layer_placeholder(lv_obj_t *parent, int y) {
-    lv_obj_t *num = lv_label_create(parent);
-    lv_label_set_text(num, "L ?");
-    lv_obj_set_style_text_font(num, &lv_font_unscii_16, 0);
-    lv_obj_align(num, LV_ALIGN_TOP_LEFT, 2, y + 2);
+static void build_layer_section(lv_obj_t *parent, int y) {
+    layer_num_label = lv_label_create(parent);
+    lv_label_set_text(layer_num_label, "L 0");
+    lv_obj_set_style_text_font(layer_num_label, &lv_font_unscii_16, 0);
+    lv_obj_align(layer_num_label, LV_ALIGN_TOP_LEFT, 2, y + 2);
 
+    /* Reserved for a layer name once we route it - relayed layer name
+     * strings are large, so for now we stick to the numeric indicator. */
     lv_obj_t *name = lv_label_create(parent);
     lv_label_set_text(name, "----");
     lv_obj_set_style_text_font(name, &lv_font_unscii_8, 0);
@@ -79,11 +95,11 @@ static void build_modifiers_placeholder(lv_obj_t *parent, int y) {
     lv_obj_align(lbl, LV_ALIGN_TOP_LEFT, 2, y + 4);
 }
 
-static void build_endpoint_placeholder(lv_obj_t *parent, int y) {
-    lv_obj_t *lbl = lv_label_create(parent);
-    lv_label_set_text(lbl, "USB\nBT ?");
-    lv_obj_set_style_text_font(lbl, &lv_font_unscii_8, 0);
-    lv_obj_align(lbl, LV_ALIGN_TOP_LEFT, 2, y + 3);
+static void build_endpoint_section(lv_obj_t *parent, int y) {
+    endpoint_label = lv_label_create(parent);
+    lv_label_set_text(endpoint_label, "BT ?");
+    lv_obj_set_style_text_font(endpoint_label, &lv_font_unscii_16, 0);
+    lv_obj_align(endpoint_label, LV_ALIGN_TOP_LEFT, 2, y + 4);
 }
 
 /* Battery row: "L  87%" text + 40-pixel-wide bar below.
@@ -140,6 +156,90 @@ static int on_battery_changed(const zmk_event_t *eh) {
 ZMK_LISTENER(aerogu38_status_battery, on_battery_changed);
 ZMK_SUBSCRIPTION(aerogu38_status_battery, zmk_battery_state_changed);
 
+/* --- Relayed state (layer / BT profile / endpoint) -----------------
+ *
+ * ZMK's layer / endpoint / ble-profile event implementations are only
+ * compiled on the central shield, so ZMK_RELAY_EVENT_HANDLE (which
+ * re-raises the event locally) can't link here. Instead we subscribe
+ * to the raw zmk_relay_event_received event, dispatch by name, and
+ * update widgets directly.
+ */
+
+static void layer_display_update(void) {
+    if (!layer_num_label) {
+        return;
+    }
+    int highest = 0;
+    for (int i = 31; i >= 0; i--) {
+        if (active_layers_mask & (1u << i)) {
+            highest = i;
+            break;
+        }
+    }
+    lv_label_set_text_fmt(layer_num_label, "L %d", highest);
+}
+
+static void handle_relay_layer(const uint8_t *data, size_t len) {
+    if (len < sizeof(struct zmk_layer_state_changed)) {
+        return;
+    }
+    struct zmk_layer_state_changed ev;
+    memcpy(&ev, data, sizeof(ev));
+    if (ev.layer >= 32) {
+        return;
+    }
+    if (ev.state) {
+        active_layers_mask |= (1u << ev.layer);
+    } else {
+        active_layers_mask &= ~(1u << ev.layer);
+        /* Layer 0 (base) always considered active for display purposes. */
+        active_layers_mask |= 0x01;
+    }
+    layer_display_update();
+}
+
+static void handle_relay_profile(const uint8_t *data, size_t len) {
+    if (len < sizeof(struct zmk_ble_active_profile_changed) || !endpoint_label) {
+        return;
+    }
+    struct zmk_ble_active_profile_changed ev;
+    memcpy(&ev, data, sizeof(ev));
+    /* NOTE: ev.profile pointer is a central-side address and must not
+     * be dereferenced here - we only use ev.index. */
+    lv_label_set_text_fmt(endpoint_label, "BT %d", ev.index);
+}
+
+static void handle_relay_endpoint(const uint8_t *data, size_t len) {
+    if (len < sizeof(struct zmk_endpoint_changed) || !endpoint_label) {
+        return;
+    }
+    struct zmk_endpoint_changed ev;
+    memcpy(&ev, data, sizeof(ev));
+    if (ev.endpoint.transport == ZMK_TRANSPORT_USB) {
+        lv_label_set_text(endpoint_label, "USB");
+    } else {
+        lv_label_set_text_fmt(endpoint_label, "BT %d", ev.endpoint.ble.profile_index);
+    }
+}
+
+static int on_relay_event(const zmk_event_t *eh) {
+    const struct zmk_relay_event_received *ev = as_zmk_relay_event_received(eh);
+    if (!ev || !ev->event_name) {
+        return ZMK_EV_EVENT_BUBBLE;
+    }
+    if (strcmp(ev->event_name, "LAYR") == 0) {
+        handle_relay_layer(ev->event_data, ev->event_data_size);
+    } else if (strcmp(ev->event_name, "PROF") == 0) {
+        handle_relay_profile(ev->event_data, ev->event_data_size);
+    } else if (strcmp(ev->event_name, "ENDP") == 0) {
+        handle_relay_endpoint(ev->event_data, ev->event_data_size);
+    }
+    return ZMK_EV_EVENT_BUBBLE;
+}
+
+ZMK_LISTENER(aerogu38_status_relay, on_relay_event);
+ZMK_SUBSCRIPTION(aerogu38_status_relay, zmk_relay_event_received);
+
 /* --- Public entry point --------------------------------------------- */
 
 void aerogu38_status_ui_build(lv_obj_t *parent) {
@@ -154,13 +254,13 @@ void aerogu38_status_ui_build(lv_obj_t *parent) {
     build_header(parent);
     add_divider(parent, 20);
 
-    build_layer_placeholder(parent, 21);
+    build_layer_section(parent, 21);
     add_divider(parent, 61);
 
     build_modifiers_placeholder(parent, 62);
     add_divider(parent, 86);
 
-    build_endpoint_placeholder(parent, 87);
+    build_endpoint_section(parent, 87);
     add_divider(parent, 111);
 
     /* Left half battery: live via ZMK event. */

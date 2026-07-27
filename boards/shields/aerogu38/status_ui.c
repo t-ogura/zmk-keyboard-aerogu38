@@ -1,26 +1,20 @@
 /*
  * SPDX-License-Identifier: MIT
  *
- * Portrait notification-panel layout for aerogu38 peripheral (68x160).
+ * Modern-card notification panel for aerogu38 peripheral (68x160).
+ * Layout follows design mockup v14b.
  *
- * Phase 1 wiring:
- *   - Header:    Aerogu logo (image, 68x20)
- *   - Layer:     placeholder ("L?" / "----") - awaits central relay
- *   - Endpoint:  placeholder ("USB" / "BT ?") - awaits central relay
- *   - Modifiers: placeholder ("- - - -") - awaits central relay
- *   - Battery L: LIVE - peripheral's own battery via ZMK event
- *   - Battery R: placeholder ("R --%") - awaits central relay
+ *    y  0..19   Aerogu header logo
+ *      26..42   BT card:  [bt-icon] "BT-N" | "USB"
+ *      48..108  LAYER card: "LAYER" caption + BASE hero (Spleen 32)
+ *     114..156  Battery card: L row (label + bar) + R row (label + bar)
  *
- * Layout coordinates (y offsets from top):
- *    0..19  header
- *   20      1px divider
- *   21..60  layer          (40 tall)
- *   61      divider
- *   62..85  modifiers      (24 tall)
- *   86      divider
- *   87..110 endpoint       (24 tall)
- *   111     divider
- *   112..159 batteries     (48 tall)
+ * All card borders are drawn as four `lv_line` segments directly on the
+ * screen. We deliberately avoid `lv_obj_create` for containers: on 1bpp
+ * mono the default LVGL theme leaks styles (dark backgrounds, scrollbar
+ * layer) that produced a mosaic-then-white failure mode even after
+ * `lv_obj_remove_style_all`. Line-based borders + flat labels/bars are
+ * the tested-good pipeline (matches Phase 1's approach).
  */
 
 #include "status_ui.h"
@@ -35,40 +29,111 @@
 #include <zmk/events/ble_active_profile_changed.h>
 #include <zmk/events/endpoint_changed.h>
 #include <zmk/events/layer_state_changed.h>
-#include <zmk/events/modifiers_state_changed.h>
-#include <dt-bindings/zmk/modifiers.h>
 
 LOG_MODULE_REGISTER(aerogu38_status, CONFIG_ZMK_LOG_LEVEL);
 
 extern const lv_image_dsc_t aerogu_logo;
+extern const lv_image_dsc_t bt_icon;
 
-/* Kept alive as file-scope statics so ZMK event listeners can update
- * them after the screen has been loaded. */
+LV_FONT_DECLARE(spleen_12);
+LV_FONT_DECLARE(spleen_32);
+
+/* File-scope so ZMK event listeners can mutate them post-load. */
+static lv_obj_t *layer_name_label;
+static lv_obj_t *endpoint_label;
 static lv_obj_t *battery_l_label;
 static lv_obj_t *battery_l_bar;
 static lv_obj_t *battery_r_label;
 static lv_obj_t *battery_r_bar;
-static lv_obj_t *layer_num_label;
-static lv_obj_t *layer_name_label;
-static lv_obj_t *modifiers_label;
-static lv_obj_t *endpoint_label;
 
-/* Draw a 1-px horizontal separator line spanning the full width at the
- * given y coordinate. Uses lv_line for a proper 1-px stroke. */
-static void add_divider(lv_obj_t *parent, int y) {
-    static lv_point_precise_t points[2];
-    points[0].x = 0;
-    points[0].y = 0;
-    points[1].x = AEROGU38_UI_W - 1;
-    points[1].y = 0;
-    lv_obj_t *line = lv_line_create(parent);
-    lv_line_set_points(line, points, 2);
-    lv_obj_set_style_line_width(line, 1, 0);
-    lv_obj_set_style_line_color(line, lv_color_black(), 0);
-    lv_obj_set_pos(line, 0, y);
+/* --- Drawing primitives ---------------------------------------------- */
+
+/* Horizontal line (x0,y) → (x1,y). Used for top/bottom card edges and
+ * any explicit dividers. */
+static void add_hline(lv_obj_t *parent, int x0, int x1, int y) {
+    static lv_point_precise_t buf[16][2];
+    static int n = 0;
+    if (n >= 16) return;
+    buf[n][0].x = 0;         buf[n][0].y = 0;
+    buf[n][1].x = x1 - x0;   buf[n][1].y = 0;
+    lv_obj_t *ln = lv_line_create(parent);
+    lv_line_set_points(ln, buf[n], 2);
+    lv_obj_set_style_line_width(ln, 1, 0);
+    lv_obj_set_style_line_color(ln, lv_color_black(), 0);
+    lv_obj_set_pos(ln, x0, y);
+    n++;
 }
 
-/* --- Section builders --------------------------------------------------- */
+/* Vertical line (x,y0) → (x,y1). */
+static void add_vline(lv_obj_t *parent, int x, int y0, int y1) {
+    static lv_point_precise_t buf[16][2];
+    static int n = 0;
+    if (n >= 16) return;
+    buf[n][0].x = 0;   buf[n][0].y = 0;
+    buf[n][1].x = 0;   buf[n][1].y = y1 - y0;
+    lv_obj_t *ln = lv_line_create(parent);
+    lv_line_set_points(ln, buf[n], 2);
+    lv_obj_set_style_line_width(ln, 1, 0);
+    lv_obj_set_style_line_color(ln, lv_color_black(), 0);
+    lv_obj_set_pos(ln, x, y0);
+    n++;
+}
+
+/* Rectangle outline from (x,y) to (x+w-1, y+h-1). Corners aren't clipped
+ * for rounding — on 68 px wide the visual difference is negligible. */
+static void add_rect(lv_obj_t *parent, int x, int y, int w, int h) {
+    add_hline(parent, x,           x + w - 1, y);
+    add_hline(parent, x,           x + w - 1, y + h - 1);
+    add_vline(parent, x,           y,         y + h - 1);
+    add_vline(parent, x + w - 1,   y,         y + h - 1);
+}
+
+/* --- Label / bar helpers --------------------------------------------- */
+
+static lv_obj_t *label_at(lv_obj_t *parent, int x, int y,
+                          const lv_font_t *font, const char *text) {
+    lv_obj_t *lbl = lv_label_create(parent);
+    lv_label_set_text(lbl, text);
+    lv_obj_set_style_text_font(lbl, font, 0);
+    lv_obj_set_style_text_color(lbl, lv_color_black(), 0);
+    lv_obj_set_pos(lbl, x, y);
+    return lbl;
+}
+
+/* Centered horizontally on the screen (68 px wide). The label object
+ * itself is auto-sized to text width, then aligned so its centre sits
+ * on the screen centre; y is the top of the label. */
+static lv_obj_t *label_hcenter(lv_obj_t *parent, int y,
+                               const lv_font_t *font, const char *text) {
+    lv_obj_t *lbl = lv_label_create(parent);
+    lv_label_set_text(lbl, text);
+    lv_obj_set_style_text_font(lbl, font, 0);
+    lv_obj_set_style_text_color(lbl, lv_color_black(), 0);
+    lv_obj_align(lbl, LV_ALIGN_TOP_MID, 0, y);
+    return lbl;
+}
+
+static lv_obj_t *battery_bar_create(lv_obj_t *parent, int x, int y,
+                                    int w, int h) {
+    lv_obj_t *bar = lv_bar_create(parent);
+    lv_bar_set_range(bar, 0, 100);
+    lv_bar_set_value(bar, 0, LV_ANIM_OFF);
+    lv_obj_set_pos(bar, x, y);
+    lv_obj_set_size(bar, w, h);
+    lv_obj_set_style_bg_color(bar, lv_color_white(), 0);
+    lv_obj_set_style_bg_opa(bar, LV_OPA_COVER, 0);
+    lv_obj_set_style_border_color(bar, lv_color_black(), 0);
+    lv_obj_set_style_border_width(bar, 1, 0);
+    lv_obj_set_style_border_opa(bar, LV_OPA_COVER, 0);
+    lv_obj_set_style_radius(bar, 0, 0);
+    lv_obj_set_style_pad_all(bar, 1, 0);
+    lv_obj_set_style_bg_color(bar, lv_color_black(), LV_PART_INDICATOR);
+    lv_obj_set_style_bg_opa(bar, LV_OPA_COVER, LV_PART_INDICATOR);
+    lv_obj_set_style_radius(bar, 0, LV_PART_INDICATOR);
+    return bar;
+}
+
+/* --- Section builders ------------------------------------------------- */
 
 static void build_header(lv_obj_t *parent) {
     lv_obj_t *img = lv_image_create(parent);
@@ -76,187 +141,128 @@ static void build_header(lv_obj_t *parent) {
     lv_obj_set_pos(img, 0, 0);
 }
 
-static void build_layer_section(lv_obj_t *parent, int y) {
-    layer_num_label = lv_label_create(parent);
-    lv_label_set_text(layer_num_label, "L 0");
-    lv_obj_set_style_text_font(layer_num_label, &lv_font_unscii_16, 0);
-    lv_obj_align(layer_num_label, LV_ALIGN_TOP_LEFT, 2, y + 2);
+static void build_bt_card(lv_obj_t *parent) {
+    add_rect(parent, 2, 26, AEROGU38_UI_W - 4, 17);
 
-    layer_name_label = lv_label_create(parent);
-    lv_label_set_text(layer_name_label, "...");
-    lv_obj_set_style_text_font(layer_name_label, &lv_font_unscii_8, 0);
-    lv_obj_align(layer_name_label, LV_ALIGN_TOP_LEFT, 2, y + 22);
+    lv_obj_t *icon = lv_image_create(parent);
+    lv_image_set_src(icon, &bt_icon);
+    lv_obj_set_pos(icon, 6, 30);
+
+    endpoint_label = label_at(parent, 20, 28, &spleen_12, "BT-?");
 }
 
-static void build_modifiers_section(lv_obj_t *parent, int y) {
-    modifiers_label = lv_label_create(parent);
-    lv_label_set_text(modifiers_label, "- - - -");
-    lv_obj_set_style_text_font(modifiers_label, &lv_font_unscii_16, 0);
-    lv_obj_align(modifiers_label, LV_ALIGN_TOP_LEFT, 2, y + 4);
+static void build_layer_card(lv_obj_t *parent) {
+    /* Full-width so BASE at Spleen 32 (glyph advance 16 -> 64 px total
+     * for 4 chars) fits inside the 1-px borders. */
+    add_rect(parent, 0, 48, AEROGU38_UI_W, 61);
+
+    label_hcenter(parent, 51, &spleen_12, "LAYER");
+    layer_name_label = label_hcenter(parent, 68, &spleen_32, "BASE");
 }
 
-static void build_endpoint_section(lv_obj_t *parent, int y) {
-    endpoint_label = lv_label_create(parent);
-    lv_label_set_text(endpoint_label, "BT ?");
-    lv_obj_set_style_text_font(endpoint_label, &lv_font_unscii_16, 0);
-    lv_obj_align(endpoint_label, LV_ALIGN_TOP_LEFT, 2, y + 4);
-}
+static void build_battery_card(lv_obj_t *parent, int initial_l_pct) {
+    add_rect(parent, 2, 114, AEROGU38_UI_W - 4, 43);
 
-/* Battery row: "L  87%" text + 40-pixel-wide bar below.
- * `label_letter` is "L" for the local half or "R" for the relayed one. */
-static void build_battery_row(lv_obj_t *parent, int y, const char *label_letter,
-                              int initial_pct, bool is_placeholder,
-                              lv_obj_t **out_label, lv_obj_t **out_bar) {
-    /* Text: "L 87%" or "L --%" for unknown. */
-    lv_obj_t *lbl = lv_label_create(parent);
-    if (is_placeholder || initial_pct < 0) {
-        lv_label_set_text_fmt(lbl, "%s --%%", label_letter);
-    } else {
-        lv_label_set_text_fmt(lbl, "%s %d%%", label_letter, initial_pct);
+    /* Row 1: L */
+    battery_l_label = label_at(parent, 5, 116, &spleen_12,
+                               initial_l_pct >= 0 ? "L" : "L --%");
+    if (initial_l_pct >= 0) {
+        lv_label_set_text_fmt(battery_l_label, "L %d%%", initial_l_pct);
     }
-    lv_obj_set_style_text_font(lbl, &lv_font_unscii_8, 0);
-    lv_obj_align(lbl, LV_ALIGN_TOP_LEFT, 2, y);
+    battery_l_bar = battery_bar_create(parent, 5, 128, AEROGU38_UI_W - 14, 4);
+    if (initial_l_pct >= 0) {
+        lv_bar_set_value(battery_l_bar, initial_l_pct, LV_ANIM_OFF);
+    }
 
-    /* Bar: outlined rectangle 60x6 with inner fill proportional to %. */
-    lv_obj_t *bar = lv_bar_create(parent);
-    lv_obj_set_size(bar, 60, 6);
-    lv_obj_align(bar, LV_ALIGN_TOP_LEFT, 4, y + 10);
-    lv_bar_set_range(bar, 0, 100);
-    lv_bar_set_value(bar, initial_pct >= 0 ? initial_pct : 0, LV_ANIM_OFF);
-    lv_obj_set_style_bg_color(bar, lv_color_white(), 0);
-    lv_obj_set_style_bg_color(bar, lv_color_black(), LV_PART_INDICATOR);
-    lv_obj_set_style_border_color(bar, lv_color_black(), 0);
-    lv_obj_set_style_border_width(bar, 1, 0);
-    lv_obj_set_style_radius(bar, 0, 0);
-    lv_obj_set_style_radius(bar, 0, LV_PART_INDICATOR);
-
-    if (out_label) *out_label = lbl;
-    if (out_bar)   *out_bar   = bar;
+    /* Row 2: R (placeholder until CBAT relay arrives) */
+    battery_r_label = label_at(parent, 5, 137, &spleen_12, "R --%");
+    battery_r_bar = battery_bar_create(parent, 5, 149, AEROGU38_UI_W - 14, 4);
 }
 
-/* --- ZMK event subscription: keep battery_l live -------------------- */
+/* --- ZMK events: local L battery ------------------------------------- */
 
 static void battery_l_update(int pct) {
-    if (battery_l_label) {
-        lv_label_set_text_fmt(battery_l_label, "L %d%%", pct);
-    }
-    if (battery_l_bar) {
-        lv_bar_set_value(battery_l_bar, pct, LV_ANIM_OFF);
-    }
+    if (battery_l_label) lv_label_set_text_fmt(battery_l_label, "L %d%%", pct);
+    if (battery_l_bar)   lv_bar_set_value(battery_l_bar, pct, LV_ANIM_OFF);
 }
 
 static int on_battery_changed(const zmk_event_t *eh) {
     const struct zmk_battery_state_changed *ev = as_zmk_battery_state_changed(eh);
-    if (ev) {
-        battery_l_update(ev->state_of_charge);
-    }
+    if (ev) battery_l_update(ev->state_of_charge);
     return ZMK_EV_EVENT_BUBBLE;
 }
-
 ZMK_LISTENER(aerogu38_status_battery, on_battery_changed);
 ZMK_SUBSCRIPTION(aerogu38_status_battery, zmk_battery_state_changed);
 
-/* --- Relayed state (layer / BT profile / endpoint) -----------------
- *
- * ZMK's layer / endpoint / ble-profile event implementations are only
- * compiled on the central shield, so ZMK_RELAY_EVENT_HANDLE (which
- * re-raises the event locally) can't link here. Instead we subscribe
- * to the raw zmk_relay_event_received event, dispatch by name, and
- * update widgets directly.
- */
+/* --- Relayed state (layer name / BT profile / endpoint / R bat) ------ */
 
-/* Custom layer-status payload sent by the central under identifier
- * "LNAM". Kept in sync with central_relay.c's aerogu38_layer_status. */
 #define LAYER_NAME_MAX_LEN 15
 struct layer_status_payload {
     uint8_t layer;
     char name[LAYER_NAME_MAX_LEN + 1];
 } __packed;
 
-static void handle_relay_layer_name(const uint8_t *data, size_t len) {
-    if (len < sizeof(struct layer_status_payload)) {
-        return;
+/* BASE hero is Spleen 32 (16 px per glyph advance): 4 chars = 64 px,
+ * which exactly matches the LAYER card's inner width. Truncate to 4 and
+ * force uppercase so any layer name renders identically. */
+static void set_layer_display(const char *name) {
+    if (!layer_name_label) return;
+    char disp[5];
+    if (name[0]) {
+        int i;
+        for (i = 0; i < 4 && name[i]; i++) {
+            char c = name[i];
+            if (c >= 'a' && c <= 'z') c -= 32;
+            disp[i] = c;
+        }
+        disp[i] = '\0';
+    } else {
+        strcpy(disp, "BASE");
     }
-    struct layer_status_payload body;
-    memcpy(&body, data, sizeof(body));
-    body.name[LAYER_NAME_MAX_LEN] = '\0';   /* defensive */
-
-    if (layer_num_label) {
-        lv_label_set_text_fmt(layer_num_label, "L %u", (unsigned)body.layer);
-    }
-    if (layer_name_label) {
-        /* Blank name -> show "..." so the row still has content. */
-        lv_label_set_text(layer_name_label, body.name[0] ? body.name : "...");
-    }
+    lv_label_set_text(layer_name_label, disp);
+    lv_obj_align(layer_name_label, LV_ALIGN_TOP_MID, 0, 68);
 }
 
-static void handle_relay_modifiers(const uint8_t *data, size_t len) {
-    if (len < sizeof(struct zmk_modifiers_state_changed) || !modifiers_label) {
-        return;
-    }
-    struct zmk_modifiers_state_changed ev;
-    memcpy(&ev, data, sizeof(ev));
-    uint8_t m = (uint8_t)ev.modifiers;
-
-    /* One character slot per modifier family (L|R merged). Uppercase
-     * letter when the modifier is held, '-' when it isn't. */
-    char slot[4] = {
-        (m & (MOD_LSFT | MOD_RSFT)) ? 'S' : '-',
-        (m & (MOD_LCTL | MOD_RCTL)) ? 'C' : '-',
-        (m & (MOD_LALT | MOD_RALT)) ? 'A' : '-',
-        (m & (MOD_LGUI | MOD_RGUI)) ? 'W' : '-',
-    };
-    lv_label_set_text_fmt(modifiers_label, "%c %c %c %c",
-                          slot[0], slot[1], slot[2], slot[3]);
+static void handle_relay_layer_name(const uint8_t *data, size_t len) {
+    if (len < sizeof(struct layer_status_payload)) return;
+    struct layer_status_payload body;
+    memcpy(&body, data, sizeof(body));
+    body.name[LAYER_NAME_MAX_LEN] = '\0';
+    set_layer_display(body.name);
 }
 
 static void handle_relay_profile(const uint8_t *data, size_t len) {
-    if (len < sizeof(struct zmk_ble_active_profile_changed) || !endpoint_label) {
-        return;
-    }
+    if (len < sizeof(struct zmk_ble_active_profile_changed) || !endpoint_label) return;
     struct zmk_ble_active_profile_changed ev;
     memcpy(&ev, data, sizeof(ev));
-    /* NOTE: ev.profile pointer is a central-side address and must not
-     * be dereferenced here - we only use ev.index. */
-    lv_label_set_text_fmt(endpoint_label, "BT %d", ev.index);
+    lv_label_set_text_fmt(endpoint_label, "BT-%d", ev.index);
 }
 
 static void handle_relay_endpoint(const uint8_t *data, size_t len) {
-    if (len < sizeof(struct zmk_endpoint_changed) || !endpoint_label) {
-        return;
-    }
+    if (len < sizeof(struct zmk_endpoint_changed) || !endpoint_label) return;
     struct zmk_endpoint_changed ev;
     memcpy(&ev, data, sizeof(ev));
     if (ev.endpoint.transport == ZMK_TRANSPORT_USB) {
         lv_label_set_text(endpoint_label, "USB");
     } else {
-        lv_label_set_text_fmt(endpoint_label, "BT %d", ev.endpoint.ble.profile_index);
+        lv_label_set_text_fmt(endpoint_label, "BT-%d", ev.endpoint.ble.profile_index);
     }
 }
 
 static void handle_relay_central_battery(const uint8_t *data, size_t len) {
-    if (len < sizeof(struct zmk_battery_state_changed)) {
-        return;
-    }
+    if (len < sizeof(struct zmk_battery_state_changed)) return;
     struct zmk_battery_state_changed ev;
     memcpy(&ev, data, sizeof(ev));
-    if (battery_r_label) {
-        lv_label_set_text_fmt(battery_r_label, "R %d%%", ev.state_of_charge);
-    }
-    if (battery_r_bar) {
-        lv_bar_set_value(battery_r_bar, ev.state_of_charge, LV_ANIM_OFF);
-    }
+    if (battery_r_label) lv_label_set_text_fmt(battery_r_label, "R %d%%", ev.state_of_charge);
+    if (battery_r_bar)   lv_bar_set_value(battery_r_bar, ev.state_of_charge, LV_ANIM_OFF);
 }
 
 static int on_relay_event(const zmk_event_t *eh) {
     const struct zmk_relay_event_received *ev = as_zmk_relay_event_received(eh);
-    if (!ev || !ev->event_name) {
-        return ZMK_EV_EVENT_BUBBLE;
-    }
+    if (!ev || !ev->event_name) return ZMK_EV_EVENT_BUBBLE;
+
     if (strcmp(ev->event_name, "LNAM") == 0) {
         handle_relay_layer_name(ev->event_data, ev->event_data_size);
-    } else if (strcmp(ev->event_name, "MODS") == 0) {
-        handle_relay_modifiers(ev->event_data, ev->event_data_size);
     } else if (strcmp(ev->event_name, "PROF") == 0) {
         handle_relay_profile(ev->event_data, ev->event_data_size);
     } else if (strcmp(ev->event_name, "ENDP") == 0) {
@@ -266,39 +272,20 @@ static int on_relay_event(const zmk_event_t *eh) {
     }
     return ZMK_EV_EVENT_BUBBLE;
 }
-
 ZMK_LISTENER(aerogu38_status_relay, on_relay_event);
 ZMK_SUBSCRIPTION(aerogu38_status_relay, zmk_relay_event_received);
 
-/* --- Public entry point --------------------------------------------- */
+/* --- Public entry point ---------------------------------------------- */
 
 void aerogu38_status_ui_build(lv_obj_t *parent) {
-    /* Parent (screen) style. */
     lv_obj_set_style_pad_all(parent, 0, 0);
     lv_obj_set_style_bg_color(parent, lv_color_white(), 0);
     lv_obj_set_style_bg_opa(parent, LV_OPA_COVER, 0);
     lv_obj_set_style_border_width(parent, 0, 0);
     lv_obj_clear_flag(parent, LV_OBJ_FLAG_SCROLLABLE);
 
-    /* Sections. */
     build_header(parent);
-    add_divider(parent, 20);
-
-    build_layer_section(parent, 21);
-    add_divider(parent, 61);
-
-    build_modifiers_section(parent, 62);
-    add_divider(parent, 86);
-
-    build_endpoint_section(parent, 87);
-    add_divider(parent, 111);
-
-    /* Left half battery: live via ZMK event. */
-    int init_pct = zmk_battery_state_of_charge();
-    build_battery_row(parent, 114, "L", init_pct, false,
-                      &battery_l_label, &battery_l_bar);
-
-    /* Right half battery: fed by the central via the CBAT relay event. */
-    build_battery_row(parent, 138, "R", -1, false,
-                      &battery_r_label, &battery_r_bar);
+    build_bt_card(parent);
+    build_layer_card(parent);
+    build_battery_card(parent, zmk_battery_state_of_charge());
 }

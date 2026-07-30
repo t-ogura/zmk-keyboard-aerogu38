@@ -6,12 +6,19 @@ config ZMK_SPLIT
 config NFCT_PINS_AS_GPIOS
     default y
 
+# Applies to both halves - the peripheral needs it for the header
+# text ("AEROGU38"), the central for BLE advertising.
+config ZMK_KEYBOARD_NAME
+    default "Aerogu38"
+
+# Auto-enable the Sharp Memory LCD widget on both halves - it decides
+# internally which side compiles what (display / relay).
+config ZMK_WIDGET_SHARP_LCD
+    default y
+
 endif
 
 if SHIELD_AEROGU38_RIGHT
-
-config ZMK_KEYBOARD_NAME
-    default "Aerogu38"
 
 config ZMK_SPLIT_ROLE_CENTRAL
     default y
@@ -20,8 +27,8 @@ endif
 
 if SHIELD_AEROGU38_LEFT
 
-# Peripheral runs a custom status screen (Aerogu logo) instead of the
-# default ZMK layout with layer/battery widgets.
+# Peripheral uses the widget's status screen instead of the default
+# ZMK one.
 choice ZMK_DISPLAY_STATUS_SCREEN
     default ZMK_DISPLAY_STATUS_SCREEN_CUSTOM if ZMK_DISPLAY
 endchoice

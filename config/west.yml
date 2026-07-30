@@ -39,5 +39,9 @@ manifest:
       remote: prospector
       revision: main
       path: modules/prospector-zmk-module
+    # Sharp Memory LCD status widget (portrait 68x160)
+    - name: zmk-widget-sharp-memory-lcd
+      remote: prospector
+      revision: main
   self:
     path: config

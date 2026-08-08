@@ -9,8 +9,61 @@
 **Branch**: `feat/lcd-portrait-notification`
 **Repo**: `t-ogura/zmk-keyboard-aerogu38`
 **Base commit at handoff**: latest tip of that branch
-**Status**: Phase 2 complete, awaiting hardware verification of the
-central→peripheral relay pipeline; Phase 3+ not started.
+**Status**: see "Session log" below — the module extraction is DONE and
+the sections after the log describe the historical Phase 0-4 work.
+
+---
+
+## 0. Session log (newest first) — READ THIS FIRST
+
+### 2026-07-31 / 08-01: prospector v2.2.2 released (side quest)
+
+Fixed two v2.2.1 regressions in `t-ogura/prospector-zmk-module`
+(burst/silent adv duty cycle): uni-body build failure
+(zmk-config-prospector#24) and burst/silent cycle lock-up on split
+centrals (#22). Merged to module main, tagged `v2.2.2`. Released via
+`t-ogura/zmk-config-prospector` per that repo's convention (west.yml
+pin bump + README + docs/RELEASES/v2.2.2/release_notes.md + tag), CI
+green, issues auto-closed. **Only remaining step: publish the GitHub
+Releases page for tag v2.2.2** (needs t-ogura's auth; body text was
+drafted in-session — regenerate from docs/RELEASES/v2.2.2 if lost).
+
+### 2026-07-30/31: UI stack extracted to zmk-widget-sharp-memory-lcd
+
+All LCD/UI/relay code moved to the new public module
+`t-ogura/zmk-widget-sharp-memory-lcd` (4+ commits on main). This
+shield now only carries the SPI overlay + Kconfig glue; west.yml pins
+the module. Module architecture:
+
+- **plumbing generic**: panel dims + rotation (CCW/CW) via Kconfig;
+  works for any ls0xx (LS013B7DH05 = set 144/168 + LAYOUT_CUSTOM)
+- **layouts hand-tuned**: `LAYOUT_68X160` (only one so far);
+  `LAYOUT_CUSTOM` = bring-your-own zmk_display_status_screen()
+- **data sources**: `SOURCE_PERIPHERAL` (relay receiver, aerogu38's
+  topology) / `SOURCE_CENTRAL` (direct local subscriptions, nice!view
+  style) selected by Kconfig, auto-defaulted by split role
+- **battery L/R labels**: `SIDE_LEFT/RIGHT` Kconfig
+
+### 2026-07-28/29: v14b UI landed on hardware
+
+Design converged after 14 mockup rounds (design/mockups/, brief in
+design/DESIGN_BRIEF.md for outsourcing further exploration). Landed
+"v14b-nb": keyboard-name header (inverted bar, Spleen 16, from
+CONFIG_ZMK_KEYBOARD_NAME), BT icon + subscript profile digit / USB
+trident icon swap, LAYER caption + 4-char-uppercase hero (Spleen 32),
+L/R slim battery bars. Hardware-verified live updates via relay.
+
+**Critical 1bpp LVGL lesson (cost a debugging session):**
+`lv_obj_create` containers leak default-theme styles at 1bpp =
+mosaic-then-white screen, even after `lv_obj_remove_style_all`. Use
+`lv_line` x4 for rectangles and `lv_bar` at 100% for filled areas.
+This and other gotchas are in the module README.
+
+### Next steps when returning to aerogu38 UI work
+
+- v15+ design exploration (hand DESIGN_BRIEF.md to other sessions/AIs)
+- docs/preview.png for the module README (photo of real hardware)
+- Consider Topics/description on the module repo
 
 ---
 

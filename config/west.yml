@@ -31,6 +31,10 @@ manifest:
       remote: cormoran
     - name: zmk-module-runtime-input-processor
       remote: cormoran
+    # Typed persistence backend required by runtime-input-processor
+    # since its 2026-07-19 custom-settings-storage merge.
+    - name: zmk-feature-custom-settings
+      remote: cormoran
     # Deadzone input processor
     - name: zmk-input-processor-deadzone
       remote: prospector
